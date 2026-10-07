@@ -1,0 +1,86 @@
+workflows:
+  ios-unsigned:
+    name: 3105 — unsigned IPA (UI catalog)
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+      vars:
+        XCODE_PROJECT: "ThreeOneOSFive.xcodeproj"
+        XCODE_SCHEME: "3105"
+        LICENSE_VALIDATION_BASE_URL: "https://keyauth.discloud.dev"
+    scripts:
+      - name: Extract and verify updated source
+        script: |
+          set -euo pipefail
+          SOURCE_DIR="$CM_BUILD_DIR"
+          ZIP="$CM_BUILD_DIR/nx-source-updated.zip"
+
+          test -f "$ZIP" || {
+            echo "ERRO: nx-source-updated.zip não foi encontrado."
+            exit 1
+          }
+
+          echo "SHA256 do source recebido pelo Codemagic:"
+          shasum -a 256 "$ZIP"
+
+          rm -rf "$CM_BUILD_DIR/workspace"
+          mkdir -p "$CM_BUILD_DIR/workspace"
+
+          unzip -tq "$ZIP"
+          unzip -q "$ZIP" -d "$CM_BUILD_DIR/workspace"
+
+          PROJECT_PATH="$(find "$CM_BUILD_DIR/workspace" -type d -name "$XCODE_PROJECT" -print -quit)"
+          test -n "$PROJECT_PATH" || {
+            echo "ERRO: $XCODE_PROJECT não foi encontrado dentro do ZIP."
+            exit 1
+          }
+          SOURCE_DIR="$(dirname "$PROJECT_PATH")"
+
+          test -f "$SOURCE_DIR/ThreeOneOSFive/views/PremiumCatalogView.swift" || {
+            echo "ERRO: source antigo detectado — PremiumCatalogView.swift ausente."
+            exit 1
+          }
+          test -s "$SOURCE_DIR/ThreeOneOSFive/product-animation.gif" || {
+            echo "ERRO: product-animation.gif ausente ou vazio."
+            exit 1
+          }
+
+          echo "Source novo confirmado:"
+          ls -lh "$SOURCE_DIR/ThreeOneOSFive/views/PremiumCatalogView.swift"
+          ls -lh "$SOURCE_DIR/ThreeOneOSFive/product-animation.gif"
+          grep -q 'com.apple.mobile.MobileHouseArrest' "$PROJECT_PATH/project.pbxproj" || {
+            echo "ERRO: Bundle ID esperado não encontrado."
+            exit 1
+          }
+
+          mkdir -p "$CM_BUILD_DIR/build/ios/ipa"
+          xcodebuild archive \
+            -project "$SOURCE_DIR/$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "$CM_BUILD_DIR/build/3105.xcarchive" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            LICENSE_VALIDATION_BASE_URL="$LICENSE_VALIDATION_BASE_URL"
+
+      - name: Package unsigned IPA
+        script: |
+          set -euo pipefail
+          APP_PATH="$(find "$CM_BUILD_DIR/build/3105.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" -print -quit)"
+          test -n "$APP_PATH"
+          rm -rf "$CM_BUILD_DIR/build/unsigned-ipa"
+          mkdir -p "$CM_BUILD_DIR/build/unsigned-ipa/Payload"
+          cp -R "$APP_PATH" "$CM_BUILD_DIR/build/unsigned-ipa/Payload/"
+          cd "$CM_BUILD_DIR/build/unsigned-ipa"
+          zip -qry "$CM_BUILD_DIR/build/ios/ipa/3105-unsigned.ipa" Payload
+          echo "IPA unsigned criada:"
+          ls -lh "$CM_BUILD_DIR/build/ios/ipa/3105-unsigned.ipa"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/3105.xcarchive/**
+      - /tmp/xcodebuild_logs/*.log
